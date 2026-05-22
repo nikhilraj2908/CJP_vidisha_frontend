@@ -1,159 +1,147 @@
+// src/lib/issues-store.ts
 import { useEffect, useState } from "react";
 
+// Keep your existing types (they already match backend fields well)
 export type IssueStatus = "Reported" | "Under Review" | "In Progress" | "Resolved";
 export type IssueCategory =
-  | "Roads"
-  | "Water"
-  | "Electricity"
-  | "Garbage"
-  | "Sewage"
-  | "Streetlights"
-  | "Corruption"
-  | "Pollution"
-  | "Jobs"
-  | "Other";
+  | "Roads" | "Water" | "Electricity" | "Garbage" | "Sewage"
+  | "Streetlights" | "Corruption" | "Pollution" | "Jobs" | "Other";
 
 export interface Issue {
-  id: string;
+  id: string;            // maps to _id from backend
   name: string;
   anonymous: boolean;
-  locality: string;
-  ward: string;
+  locality: string;      // maps to areaLocality
+  ward: string;          // maps to wardNo
   category: IssueCategory;
   title: string;
   description: string;
-  image: string; // data URL
-  contact: string;
+  image: string;         // full URL (backend URL + imageUrl)
+  contact: string;       // maps to emailOrPhone
   supportCount: number;
   status: IssueStatus;
-  approved: boolean;
-  createdAt: number;
+  approved: boolean;     // true if backend status === 'approved'
+  createdAt: number;     // timestamp
 }
 
-const KEY = "cjp_issues_v1";
-const VOTE_KEY = "cjp_issue_votes_v1";
+// ========== API base URL from .env ==========
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5000/api';
 
-const SEED: Issue[] = [
-  {
-    id: "seed-1",
-    name: "",
-    anonymous: true,
-    locality: "Ward 12",
-    ward: "12",
-    category: "Sewage",
-    title: "Sewage Spill in Ward 12",
-    description: "Residents have been dealing with drainage overflow for two weeks.",
-    image: "",
-    contact: "",
-    supportCount: 154,
-    status: "Reported",
-    approved: true,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 3,
-  },
-  {
-    id: "seed-2",
-    name: "",
-    anonymous: true,
-    locality: "Bus Stand",
-    ward: "",
-    category: "Garbage",
-    title: "Garbage pile near bus stand",
-    description: "Daily waste collection has been irregular for over a month.",
-    image: "",
-    contact: "",
-    supportCount: 89,
-    status: "Under Review",
-    approved: true,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 2,
-  },
-  {
-    id: "seed-3",
-    name: "",
-    anonymous: true,
-    locality: "Patel Nagar",
-    ward: "",
-    category: "Streetlights",
-    title: "Broken streetlights in Patel Nagar",
-    description: "Entire lane goes pitch dark after 7pm. Unsafe for women & kids.",
-    image: "",
-    contact: "",
-    supportCount: 212,
-    status: "In Progress",
-    approved: true,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24,
-  },
-  {
-    id: "seed-4",
-    name: "",
-    anonymous: true,
-    locality: "Kailaras Road",
-    ward: "",
-    category: "Water",
-    title: "Water leakage near Kailaras Road",
-    description: "Lakhs of litres wasted while colonies wait for tankers.",
-    image: "",
-    contact: "",
-    supportCount: 67,
-    status: "Reported",
-    approved: true,
-    createdAt: Date.now() - 1000 * 60 * 60 * 12,
-  },
-];
+// Helper to map backend issue → frontend Issue
+function mapBackendToFrontend(backend: any): Issue {
+  const isApproved = backend.status === 'approved';
+  // Map backend status to your display statuses (adjust as you like)
+  let displayStatus: IssueStatus = "Reported";
+  if (backend.status === 'approved') displayStatus = "In Progress";
+  if (backend.status === 'rejected') displayStatus = "Reported"; // or keep as is
 
+  return {
+    id: backend._id,
+    name: backend.anonymous ? '' : backend.name,
+    anonymous: backend.anonymous,
+    locality: backend.areaLocality,
+    ward: backend.wardNo,
+    category: backend.category as IssueCategory,
+    title: backend.title,
+    description: backend.description,
+    image: backend.imageUrl ? `${API_BASE.replace('/api', '')}${backend.imageUrl}` : '',
+    contact: backend.emailOrPhone,
+    supportCount: backend.supportCount || 0,
+    status: displayStatus,
+    approved: isApproved,
+    createdAt: new Date(backend.createdAt).getTime(),
+  };
+}
+
+// ========== Public API calls ==========
+async function fetchApprovedIssues(): Promise<Issue[]> {
+  const res = await fetch(`${API_BASE}/issues?limit=100`); // get latest 100
+  if (!res.ok) throw new Error('Failed to fetch issues');
+  const data = await res.json();
+  return data.issues.map(mapBackendToFrontend);
+}
+
+// ========== Store state & reactive hook ==========
+let cachedIssues: Issue[] = [];
 const listeners = new Set<() => void>();
 
-function read(): Issue[] {
-  if (typeof window === "undefined") return SEED;
+async function refreshIssues() {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) {
-      localStorage.setItem(KEY, JSON.stringify(SEED));
-      return SEED;
-    }
-    return JSON.parse(raw) as Issue[];
-  } catch {
-    return SEED;
+    const issues = await fetchApprovedIssues();
+    cachedIssues = issues;
+    listeners.forEach(l => l());
+  } catch (err) {
+    console.error('Failed to refresh issues:', err);
   }
 }
 
-function write(next: Issue[]) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(KEY, JSON.stringify(next));
-  listeners.forEach((l) => l());
+// Initial load (non‑blocking)
+if (typeof window !== 'undefined') {
+  refreshIssues();
 }
 
+// Exported functions – same signatures as before
 export function getIssues(): Issue[] {
-  return read();
+  return cachedIssues;
 }
 
-export function createIssue(input: Omit<Issue, "id" | "supportCount" | "status" | "approved" | "createdAt">) {
-  const issue: Issue = {
-    ...input,
-    id: `iss-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    supportCount: 0,
-    status: "Reported",
-    approved: false,
-    createdAt: Date.now(),
-  };
-  write([issue, ...read()]);
-  return issue;
+export async function createIssue(input: Omit<Issue, "id" | "supportCount" | "status" | "approved" | "createdAt">) {
+  const formData = new FormData();
+  formData.append('areaLocality', input.locality);
+  formData.append('category', input.category);
+  formData.append('title', input.title);
+  formData.append('description', input.description);
+  formData.append('name', input.anonymous ? '' : input.name);
+  formData.append('anonymous', String(input.anonymous));
+  formData.append('wardNo', input.ward);
+  formData.append('emailOrPhone', input.contact);
+  // If input.image is a data URL, convert to Blob
+  if (input.image && input.image.startsWith('data:')) {
+    const blob = await (await fetch(input.image)).blob();
+    formData.append('image', blob, 'upload.jpg');
+  }
+
+  const res = await fetch(`${API_BASE}/issues`, { method: 'POST', body: formData });
+  if (!res.ok) throw new Error(await res.text());
+  const result = await res.json();
+  // After submission, refresh list to show pending? (Pending issues won't appear until approved)
+  await refreshIssues();
+  return result.issue;
 }
 
 export function updateIssue(id: string, patch: Partial<Issue>) {
-  write(read().map((i) => (i.id === id ? { ...i, ...patch } : i)));
+  // Not supported in public API; admin only. You can ignore or implement via admin endpoint.
+  console.warn('updateIssue not implemented for public store');
 }
 
 export function deleteIssue(id: string) {
-  write(read().filter((i) => i.id !== id));
+  console.warn('deleteIssue not implemented');
 }
 
-export function supportIssue(id: string): boolean {
+// Support / vote – we need a backend endpoint for this.
+// If you haven't added it yet, this will fallback to localStorage (optional).
+const VOTE_KEY = "cjp_issue_votes_v1";
+
+export async function supportIssue(id: string): Promise<boolean> {
   if (typeof window === "undefined") return false;
+  
+  // Check if already supported (localStorage)
   const votes: string[] = JSON.parse(localStorage.getItem(VOTE_KEY) ?? "[]");
   if (votes.includes(id)) return false;
+  
+  // Try calling backend support endpoint (if exists)
+  try {
+    const res = await fetch(`${API_BASE}/issues/${id}/support`, { method: 'PUT' });
+    if (!res.ok) throw new Error();
+    await res.json();
+  } catch {
+    // If backend doesn't have support endpoint, just increment locally
+    console.warn('Backend support endpoint not available – support count will not persist');
+  }
+  
   votes.push(id);
   localStorage.setItem(VOTE_KEY, JSON.stringify(votes));
-  updateIssue(id, { supportCount: (read().find((i) => i.id === id)?.supportCount ?? 0) + 1 });
+  await refreshIssues(); // refresh to get updated supportCount from backend
   return true;
 }
 
@@ -163,24 +151,25 @@ export function hasSupported(id: string): boolean {
   return votes.includes(id);
 }
 
+// React hook that provides reactive updates
 export function useIssues(): Issue[] {
-  const [issues, setIssues] = useState<Issue[]>(() => (typeof window === "undefined" ? SEED : read()));
+  const [issues, setIssues] = useState<Issue[]>(cachedIssues);
   useEffect(() => {
-    setIssues(read());
-    const sync = () => setIssues(read());
-    listeners.add(sync);
-    window.addEventListener("storage", sync);
+    setIssues(cachedIssues);
+    const handler = () => setIssues(cachedIssues);
+    listeners.add(handler);
+    // initial refresh
+    refreshIssues().then(() => handler());
     return () => {
-      listeners.delete(sync);
-      window.removeEventListener("storage", sync);
+      listeners.delete(handler);
     };
   }, []);
   return issues;
 }
 
+// Keep existing constants
 export const CATEGORIES: IssueCategory[] = [
   "Roads", "Water", "Electricity", "Garbage", "Sewage",
   "Streetlights", "Corruption", "Pollution", "Jobs", "Other",
 ];
-
 export const STATUSES: IssueStatus[] = ["Reported", "Under Review", "In Progress", "Resolved"];
